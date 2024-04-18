@@ -1,0 +1,308 @@
+<head>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.117.1/build/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/scatter-gl@0.0.5/lib/scatter-gl.min.js"></script> 
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@2.0.0"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/facemesh@0.0.3"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-wasm@2.0.0/dist/tf-backend-wasm.js"></script>
+    <script src="triangulation.js"></script>   
+    <link rel="stylesheet" href="https://www.w3schools.com/w3css/4/w3.css">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Lobster&effect=shadow-multiple">
+    <style>
+        body {
+            background-color: #121212;
+        }
+        .canvas-wrapper, #scatter-gl-container {
+            display: inline-block;
+            vertical-align: top;
+        }
+        .w3-lobster {
+            font-family: "Lobster", Sans-serif;
+        }
+        #scatter-gl-container {
+            border: solid 1px #ffffff;
+            position: relative;
+            border-radius: 10px;
+            overflow: hidden;
+            box-shadow: 0 0 20px rgba(255, 255, 255, 0.3);
+        }
+        /* center the canvas within its wrapper */
+        #scatter-gl-container canvas {
+            transform: translate3d(-50%, -50%, 0);
+            left: 50%;
+            top: 50%;
+            position: absolute;
+        }
+        .container {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            border: solid 10px #ffffff;
+            border-radius: 20px;
+            overflow: hidden;
+            margin-top: 20px;
+            box-shadow: 0 0 20px rgba(255, 255, 255, 0.3);
+        }
+        .canvas-wrapper {
+            border: none;
+            margin-right: 100px; /* Adjust as needed */
+        }
+        /* Apply a grayscale filter to the video feed */
+        #video {
+            filter: grayscale(50%);
+        }
+    </style>
+    
+  </head>
+  <body>
+    <div id="main">
+      <div class="w3-container w3-lobster">
+          <p class="w3-xlarge font-effect-shadow-multiple">Face   Tracking   System</p>
+      </div>
+
+
+      <div class="container" width='100%'>
+        <div class="canvas-wrapper">
+          <canvas id="output"></canvas>
+          <video id="video" playsinline style="
+            -webkit-transform: scaleX(-1);
+            transform: scaleX(-1);
+            visibility: hidden;
+            width: auto;
+            height: auto;
+          "></video>
+        </div>
+        <div id="scatter-gl-container"></div>
+      </div>
+    </div>
+    <div id="myDiv01">...</div>
+
+
+<script>
+    async function setupCamera() {
+        video = document.getElementById('video');
+
+        const stream = await navigator.mediaDevices.getUserMedia({
+            'audio': false,
+            'video': {
+                facingMode: 'user',
+                width: mobile ? undefined : VIDEO_SIZE,
+                height: mobile ? undefined : VIDEO_SIZE
+            },
+        });
+        video.srcObject = stream;
+
+        return new Promise((resolve) => {
+            video.onloadedmetadata = () => {
+                resolve(video);
+            };
+        });
+    }
+
+    async function main() {
+        await tf.setBackend(state.backend);
+        await setupCamera(); // Call camera setup asynchronously
+        // Other initialization code...
+    }
+
+    main();
+</script>
+  </body>
+
+  <div id="myDiv01">...</div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/dat-gui/0.7.6/dat.gui.min.js"></script>
+  <script>
+    
+function isMobile() {
+    const isAndroid = /Android/i.test(navigator.userAgent);
+    const isiOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+    return isAndroid || isiOS;
+  }
+  
+  function drawPath(ctx, points, closePath) {
+    const region = new Path2D();
+    region.moveTo(points[0][0], points[0][1]);
+    for (let i = 1; i < points.length; i++) {
+      const point = points[i];
+      region.lineTo(point[0], point[1]);
+    }
+  
+    if (closePath) {
+      region.closePath();
+    }
+    ctx.stroke(region);
+  }
+  
+  let model, ctx, videoWidth, videoHeight, video, canvas,
+      scatterGLHasInitialized = false, scatterGL;
+  
+  const VIDEO_SIZE = 500;
+  const mobile = isMobile();
+  const renderPointcloud = true;//mobile === false;
+  const state = {
+    backend: 'wasm',
+    maxFaces: 10,
+    triangulateMesh: false
+  };
+  
+  if (renderPointcloud) {
+    state.renderPointcloud = true;
+  }
+  
+  function setupDatGui() {
+    const gui = new dat.GUI();
+    gui.add(state, 'backend', ['wasm', 'webgl', 'cpu'])
+        .onChange(async backend => {
+          await tf.setBackend(backend);
+        });
+  
+    gui.add(state, 'maxFaces', 1, 20, 1).onChange(async val => {
+      model = await facemesh.load({maxFaces: val});
+    });
+  
+    gui.add(state, 'triangulateMesh');
+  
+    if (renderPointcloud) {
+      gui.add(state, 'renderPointcloud').onChange(render => {
+        document.querySelector('#scatter-gl-container').style.display =
+            render ? 'inline-block' : 'none';
+      });
+    }
+  }
+  
+  async function setupCamera() {
+    video = document.getElementById('video');
+  
+    const stream = await navigator.mediaDevices.getUserMedia({
+      'audio': false,
+      'video': {
+        facingMode: 'user',
+        // Only setting the video to a specified size in order to accommodate a
+        // point cloud, so on mobile devices accept the default size.
+        width: mobile ? undefined : VIDEO_SIZE,
+        height: mobile ? undefined : VIDEO_SIZE
+      },
+    });
+    video.srcObject = stream;
+  
+    return new Promise((resolve) => {
+      video.onloadedmetadata = () => {
+        resolve(video);
+      };
+    });
+  }
+  
+  async function renderPrediction() {
+   // stats.begin();
+  
+    const predictions = await model.estimateFaces(video);
+     // console.log(predictions[0].faceInViewConfidence)
+    ctx.drawImage(
+        video, 0, 0, videoWidth, videoHeight, 0, 0, canvas.width, canvas.height);
+  
+    document.getElementById('myDiv01').innerHTML = '' 
+    if (predictions.length > 0) {
+      predictions.forEach(prediction => {
+        try {
+          //document.getElementById('myDiv01').innerHTML += 'Confidence: ' + prediction.faceInViewConfidence.toFixed(4) + '<br>'
+          console.log(prediction.faceInViewConfidence.toFixed(4))
+        }
+        catch(err){
+        //document.getElementById('myDiv01').innerHTML = err.message;
+        console.log(err.message)
+        }
+          
+        const keypoints = prediction.scaledMesh;
+   // console.log(keypoints[0][2])
+        if (state.triangulateMesh) {
+          for (let i = 0; i < TRIANGULATION.length / 3; i++) {
+            const points = [
+              TRIANGULATION[i * 3], TRIANGULATION[i * 3 + 1],
+              TRIANGULATION[i * 3 + 2]
+            ].map(index => keypoints[index]);
+  
+            drawPath(ctx, points, true);
+          }
+        } else {
+          for (let i = 0; i < keypoints.length; i++) {
+            const x = keypoints[i][0];
+            const y = keypoints[i][1];
+  
+            ctx.beginPath();
+            ctx.arc(x, y, 1 /* radius */, 0, 2 * Math.PI);
+            ctx.fill();
+          }
+        }
+      });
+  
+      if (renderPointcloud && state.renderPointcloud && scatterGL != null) {
+        const pointsData = predictions.map(prediction => {
+          let scaledMesh = prediction.scaledMesh;
+          return scaledMesh.map(point => ([-point[0], -point[1], -point[2]]));
+        });
+  
+        let flattenedPointsData = [];
+        for (let i = 0; i < pointsData.length; i++) {
+          flattenedPointsData = flattenedPointsData.concat(pointsData[i]);
+        }
+        const dataset = new ScatterGL.Dataset(flattenedPointsData);
+  
+        if (!scatterGLHasInitialized) {
+          scatterGL.render(dataset);
+        } else {
+          scatterGL.updateDataset(dataset);
+        }
+        scatterGLHasInitialized = true;
+      }
+    }
+  
+  //  stats.end();
+    requestAnimationFrame(renderPrediction);
+  };
+  
+  async function main() {
+    await tf.setBackend(state.backend);
+    //setupDatGui();
+  
+    //stats.showPanel(0);  // 0: fps, 1: ms, 2: mb, 3+: custom
+  //  document.getElementById('main').appendChild(stats.dom);
+  
+    await setupCamera();
+    video.play();
+    videoWidth = video.videoWidth;
+    videoHeight = video.videoHeight;
+    video.width = videoWidth;
+    video.height = videoHeight;
+  
+    canvas = document.getElementById('output');
+    canvas.width = videoWidth;
+    canvas.height = videoHeight;
+    const canvasContainer = document.querySelector('.canvas-wrapper');
+    canvasContainer.style = `width: ${videoWidth}px; height: ${videoHeight}px`;
+  
+    ctx = canvas.getContext('2d');
+    ctx.translate(canvas.width, 0);
+    ctx.scale(-1, 1);
+    ctx.fillStyle = '#32EEDB';
+    ctx.strokeStyle = '#32EEDB';
+    ctx.lineWidth = 0.5;
+  
+    model = await facemesh.load({maxFaces: state.maxFaces});
+     // console.log(model)
+    renderPrediction();
+  
+    if (renderPointcloud) {
+      document.querySelector('#scatter-gl-container').style =
+          `width: ${VIDEO_SIZE}px; height: ${VIDEO_SIZE}px;`;
+  
+      scatterGL = new ScatterGL(
+          document.querySelector('#scatter-gl-container'),
+          {'rotateOnStart': false, 'selectEnabled': false});
+    }
+  };
+  
+  main();
+        
+  </script>
+  
+ 
+  
